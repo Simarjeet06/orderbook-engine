@@ -11,8 +11,10 @@ The engine supports price-time priority matching, partial fills, limit and
 market orders, and cancels. It's organized in two layers:
 
 - **Matching core** (`OrderBook`) — a single instrument's book: bids/asks
-  as sorted price levels, each level a FIFO queue of resting orders.
-  Correctness is covered by a dependency-free test suite.
+  as flat arrays of price levels indexed directly by tick (`O(1)` best-price
+  access), each level an intrusive doubly-linked list of resting orders
+  backed by a fixed-capacity object pool (`O(1)` cancel, no per-order heap
+  allocation). Correctness is covered by a dependency-free test suite.
 - **Sharded engine** (`ShardedEngine`) — runs many `OrderBook` instances in
   parallel, one per symbol-shard, each pinned to its own thread with zero
   shared mutable state. Order flow reaches each shard through a hand-rolled
@@ -42,21 +44,28 @@ one.
 
 ## Performance
 
-Measured on a dev machine, `-O2`, 4 producer threads, 64 symbols, 2M
-synthetic events (90% add / 10% cancel):
+Measured on a dev machine, `-O2`. Single-threaded, 1M synthetic events
+(90% add / 10% cancel):
+
+| | Throughput | p50 | p99 | p999 |
+|---|---|---|---|---|
+| `OrderBook` | 7.06M events/s | 42 ns | 0.67 μs | 1.21 μs |
+
+Sharded, 4 producer threads, 64 symbols, 2M synthetic events:
 
 | Shards | Throughput | Matching latency p50 | Matching latency p99 |
 |--------|------------|----------------------|-----------------------|
-| 1      | 3.22M events/s | 0.125 μs | 2.17 μs |
-| 4      | 9.67M events/s | 0.167 μs | 2.38 μs |
-| 8      | 10.24M events/s | 0.208 μs | 2.96 μs |
+| 1      | 4.13M events/s | 42 ns | 1.75 μs |
+| 4      | 11.35M events/s | 84 ns | 2.04 μs |
+| 8      | 13.53M events/s | 125 ns | 2.54 μs |
 
 Throughput scales close to linearly from 1→4 shards; matching latency
-stays essentially flat regardless of shard count, since each shard is
-still a contention-free, single-threaded matching loop — sharding adds
-parallelism without ever touching the matching hot path. (Scaling flattens
-past 4 shards here because the benchmark only uses 4 producer threads —
-see `DESIGN_NOTES.md` for the full breakdown and known limitations.)
+stays low regardless of shard count, since each shard is still a
+contention-free, single-threaded matching loop — sharding adds parallelism
+without ever touching the matching hot path. (Scaling flattens past 4
+shards here because the benchmark only uses 4 producer threads — see
+`DESIGN_NOTES.md` for the full breakdown, the before/after numbers for
+each individual optimization, and known limitations.)
 
 Always re-run the benchmarks on your own hardware before citing a number —
 see below.
@@ -64,7 +73,7 @@ see below.
 ## Getting started
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/Simarjeet06/orderbook-engine.git
 cd orderbook-engine
 make            # builds demo, single-threaded bench, tests, sharded bench; runs tests
 ```
@@ -96,3 +105,12 @@ include/timing.hpp         Monotonic-clock helper
 bench/bench_sharded.cpp    Multi-producer, multi-shard benchmark
 ```
 
+## Further reading
+
+`DESIGN_NOTES.md` has the full engineering log: why sharding beats locking
+a shared book, why the benchmark reports two separate latency numbers
+(matching-only vs. end-to-end), the measured before/after for each matching-
+core optimization (flat-array price levels, intrusive-list cancel, an
+order-node object pool — plus why `-O3`/`-march=native` turned out *not* to
+help), known limitations (no hard core pinning on macOS, unthrottled
+producers, symbol-to-shard hashing), and what's still worth building next.

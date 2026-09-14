@@ -15,7 +15,11 @@ int main(int argc, char** argv) {
     size_t numOrders = 1'000'000;
     if (argc > 1) numOrders = std::stoul(argv[1]);
 
-    OrderBook book;
+    // Pool capacity = numOrders: this single book absorbs all events (no
+    // sharding here), so the number of orders ever resting at once can't
+    // exceed the number submitted -- sizing the pool to numOrders is a
+    // safe, tight upper bound.
+    OrderBook book(20000, numOrders);
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<int> sideDist(0, 1);
     std::uniform_int_distribution<int64_t> priceDist(9900, 10100); // ticks around 100.00
